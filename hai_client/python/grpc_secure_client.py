@@ -3,10 +3,13 @@
 # import logging
 
 # import damei as dm
+from sqlite3 import paramstyle
 import grpc
+import json
 import warnings
 import copy
 import os, sys
+import numpy as np
 from pathlib import Path
 pydir = Path(os.path.abspath(__file__)).parent
 
@@ -31,12 +34,14 @@ def run():
     print("Received:", respnse.result, respnse.map_result)
 
 
-class XAIGrpcClient(object):
+class HAIGrpcClient(object):
     def __init__(self, ip='localhost', port=50052):
         # 初始化客户端
-        logger.info('connecting to server: %s:%s', ip, port)
+        self.ip = ip
+        self.port = port
+        logger.info('Connecting to server: %s:%s', ip, port)
         # conn = grpc.insecure_channel(f'{ip}:{port}')
-        with open(f'{pydir}/cert/server.crt', 'rb') as f:
+        with open(f'{pydir.parent}/grpc/cert/server.crt', 'rb') as f:
             trusted_certs = f.read()
         credentials = grpc.ssl_channel_credentials(root_certificates=trusted_certs)
         channel = grpc.secure_channel(f'{ip}:{port}', credentials, options=[
@@ -45,13 +50,21 @@ class XAIGrpcClient(object):
             ('grpc.max_send_message_length', 100 * 1024 * 1024),
         ])
         self.client = grpc_pb2_grpc.GrpcServiceStub(channel=channel)
+        self.hello()  # 测试是否通顺
 
     def hello(self):
         """请求服务端hellp函数的方法"""
         skill = grpc_pb2.Skill(name="engineer")
         request = grpc_pb2.HelloRequest(data='im damei', skill=skill)
-        response = self.client.hello(request)
+        try:
+            response = self.client.hello(request)
+        except grpc._channel._InactiveRpcError as e:
+            # print(e, e.__class__)
+            raise Exception(f'Fail to connect to "{self.ip}:{self.port}", please run server first. Info: {e}')
         return response
+
+    def call(self, func, **kwargs):
+        return self.__call__(func, params=kwargs)
 
     def __call__(self, func, params=None, **kwargs):
         """调用服务端的函数"""
@@ -62,22 +75,58 @@ class XAIGrpcClient(object):
         # params = xai_pb2.Params(key='1', value=5)
         # params = xai_pb2.Params(key={'key': '1', 'value': '1'}, value={'key': 6, 'value': 6})
         # 把parms转为bytes类型
-        params_bytes = str(params).encode('utf-8')
-        request = grpc_pb2.CallRequest(func=func, params=params_bytes)
+        params = self.params2json(params)
+        request = grpc_pb2.CallRequest(func=func, params=params)
         # 调用服务端的函数
         response = self.client.call(request)
+    
         status, data = response.status, response.data
+        data = data.decode('utf-8')
         try:
-            data = eval(data.decode('utf-8'))
+            data = json.loads(data)
         except:
-            data = data.decode('utf-8')
+            try:
+                data = eval(data)
+            except:
+                pass
         # print('xxxxx', status,)
         if status == -1:
             # raise Exception(data)
-            raise Exception(f'{func} error: {data}')
+            raise Exception(data)
         elif status != 1:
             warnings.warn(f'Function "{func}" call warning, msg：{data}')
         return status, data
+
+    def params2json(self, params):
+        """
+        将参数转为json格式
+        """
+        # 需要考虑params是否的json指出的格式，如果否，还需指定参数类型
+        new_params = copy.deepcopy(params)
+        for k, v in params.items():
+            # print(k, v, type(v))
+            tp = type(v)
+            if tp in [str, int, float, bool]:
+                # new_params[k] = v
+                pass
+            elif tp in [list, tuple, dict]:  # TODO: 需要递归内部元素的类型
+                pass
+            elif tp == np.ndarray:
+                new_params[k] = v.tolist()
+                new_params[f'{k}_type'] = 'numpy.ndarray'
+            else:
+                raise Exception(f'params type {tp} not supported')
+
+        params = json.dumps(new_params)
+        params = str(params).encode('utf-8')
+        
+        # print(params)
+        return params
+
+    def list_modules(self):
+        status, modules = self(func='ps', params=None)
+        assert status == 1, modules
+        return modules
 
     def test_ps(self):
         """测试ps函数"""
@@ -141,7 +190,7 @@ if __name__ == '__main__':
 
     # 初始化客户端
     # client = XAIGrpcClient('192.168.30.99', 9999)
-    client = XAIGrpcClient('localhost', 9999)
+    client = HAIGrpcClient('localhost', 9999)
     # client = XAIGrpcClient('127.0.0.1', 9999)
     # client = XAIGrpcClient('192.168.40.133', 9999)
     ps_data = client.test_ps()

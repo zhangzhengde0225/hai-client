@@ -20,7 +20,7 @@ EMAIL = 'zdzhang@163.com'
 AUTHOR = 'Zhengde Zhang'
 REQUIRES_PYTHON = '>=3.6.0'
 
-with open(f'hai/version.py') as f:
+with open(f'hai_client/version.py') as f:
     data = f.readlines()
     for line in data:
         if '__version__' in line:
